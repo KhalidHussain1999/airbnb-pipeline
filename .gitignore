@@ -1,0 +1,22 @@
+# Airflow logs and cache
+logs/
+__pycache__/
+*.pyc
+*.pyo
+
+# DBT compiled files
+dags/dbt/dbtproject/target/
+dags/dbt/dbtproject/dbt_packages/
+dags/dbt/dbtproject/logs/
+
+# Sensitive files — never push these
+profiles.yml
+.env
+
+# Python
+*.egg-info/
+dist/
+build/
+
+# Airflow config
+config/

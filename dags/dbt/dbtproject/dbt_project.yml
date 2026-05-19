@@ -1,0 +1,27 @@
+name: 'airbnb_pipeline'
+version: '1.0.0'
+config-version: 2
+
+profile: 'default'
+
+model-paths:  ["models"]
+macro-paths:  ["macros"]
+test-paths:   ["tests"]
+
+target-path:  "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  airbnb_pipeline:
+    bronze:
+      +schema:        bronze
+      +materialized:  table
+      +tags:          ["bronze", "raw"]
+    silver:
+      +schema:        silver
+      +materialized:  view
+      +tags:          ["silver", "staging"]
+    gold:
+      +schema:        gold
+      +materialized:  table
+      +tags:          ["gold", "business"]

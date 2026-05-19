@@ -1,0 +1,155 @@
+version: 2
+
+models:
+
+  # ── BRONZE TESTS ──────────────────────────────────────────
+  - name: bronze_listings
+    description: "Raw listings with correct data types from S3"
+    columns:
+      - name: listing_id
+        tests:
+          - not_null
+          - unique
+      - name: price_raw
+        tests:
+          - not_null
+
+  - name: bronze_reviews
+    description: "Raw reviews with correct data types from S3"
+    columns:
+      - name: review_id
+        tests:
+          - not_null
+      - name: listing_id
+        tests:
+          - not_null
+      - name: review_date
+        tests:
+          - not_null
+
+  # ── SILVER TESTS ──────────────────────────────────────────
+  - name: silver_listings
+    description: "Cleaned listings with currency normalisation"
+    columns:
+      - name: listing_id
+        tests:
+          - not_null
+          - unique
+      - name: city
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['New York', 'Paris', 'Rome', 'Sydney',
+                         'Bangkok', 'Cape Town', 'Mexico City',
+                         'Istanbul', 'Hong Kong', 'Rio de Janeiro']
+      - name: price_usd
+        tests:
+          - not_null
+      - name: price_category
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Budget', 'Mid-range', 'Premium', 'Luxury']
+      - name: host_type
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Superhost', 'Regular Host']
+      - name: stay_type
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Flexible', 'Weekly', 'Monthly', 'Long Stay']
+      - name: currency
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['USD', 'EUR', 'AUD', 'THB',
+                         'ZAR', 'MXN', 'TRY', 'HKD', 'BRL']
+
+  - name: silver_reviews
+    description: "Reviews with date dimension columns"
+    columns:
+      - name: review_id
+        tests:
+          - not_null
+      - name: listing_id
+        tests:
+          - not_null
+      - name: season
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Winter', 'Spring', 'Summer', 'Autumn']
+      - name: review_date
+        tests:
+          - not_null
+
+  # ── GOLD TESTS ────────────────────────────────────────────
+  - name: fct_revenue_by_city
+    description: "Revenue metrics aggregated by city"
+    columns:
+      - name: city
+        tests:
+          - not_null
+          - unique
+      - name: total_listings
+        tests:
+          - not_null
+      - name: avg_price_usd
+        tests:
+          - not_null
+
+  - name: fct_superhost_performance
+    description: "Superhost vs regular host comparison per city"
+    columns:
+      - name: city
+        tests:
+          - not_null
+      - name: host_type
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Superhost', 'Regular Host']
+      - name: total_listings
+        tests:
+          - not_null
+
+  - name: fct_seasonal_trends
+    description: "Booking trends by month and season per city"
+    columns:
+      - name: city
+        tests:
+          - not_null
+      - name: season
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Winter', 'Spring', 'Summer', 'Autumn']
+      - name: total_reviews
+        tests:
+          - not_null
+
+  - name: fct_price_vs_rating
+    description: "Price category vs review rating analysis"
+    columns:
+      - name: city
+        tests:
+          - not_null
+      - name: price_category
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Budget', 'Mid-range', 'Premium', 'Luxury']
+      - name: total_listings
+        tests:
+          - not_null
