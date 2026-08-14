@@ -1,19 +1,40 @@
 """
 scripts/profile_data.py
 
-One-off data profiling step. Run this LOCALLY, BEFORE designing the
-Snowflake bronze tables in dags/dbt/dbtproject/models/bronze/ — not as
-part of the Airflow DAG. It profiles the raw source CSVs (the files
-you're about to upload to S3) and writes a markdown report so schema
-and null-handling decisions are based on what's actually in the data.
+One-off data profiling step. Run this BEFORE designing the Snowflake
+bronze tables in dags/dbt/dbtproject/models/bronze/ — not as part of
+the Airflow DAG. It profiles the raw source CSVs and writes a markdown
+report so schema and null-handling decisions are based on what's
+actually in the data.
 
-Usage:
+Accepts either a LOCAL path or an S3 URI for --listings / --reviews:
+
+    # Local file (already UTF-8, e.g. Listings_utf8.csv)
+    python scripts/profile_data.py \
+        --listings /path/to/Listings_utf8.csv \
+        --reviews  /path/to/Reviews_utf8.csv \
+        --out      docs/data_profile_report.md
+
+    # Directly from S3 (no manual download needed)
+    python scripts/profile_data.py \
+        --listings s3://airbnb-pipeline-raw/raw/Listings_utf8.csv \
+        --reviews  s3://airbnb-pipeline-raw/raw/Reviews_utf8.csv \
+        --out      docs/data_profile_report.md
+
+    # Profiling the ORIGINAL pre-conversion raw file instead (Latin-1)
     python scripts/profile_data.py \
         --listings /path/to/Listings.csv \
         --reviews  /path/to/Reviews.csv \
-        --out      docs/data_profile_report.md
+        --listings-encoding latin-1
+
+S3 access here uses your own local AWS credentials (configured via
+`aws configure`), separate from Snowflake's Storage Integration —
+this project's Airflow DAG never touches AWS credentials directly,
+since Snowflake handles S3 access internally through its own IAM
+role trust relationship.
 """
 
+import sys
 import argparse
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +53,41 @@ CURRENCY_HANDLED_CITIES = {
     "New York", "Paris", "Rome", "Sydney", "Bangkok",
     "Cape Town", "Mexico City", "Istanbul", "Hong Kong", "Rio de Janeiro",
 }
+
+
+def load_csv(path: str, **read_csv_kwargs) -> pd.DataFrame:
+    """Load a CSV from either a local path or an s3:// URI.
+
+    pandas + s3fs handle s3:// paths transparently — no branching needed
+    for the happy path. This wrapper just gives a clear, actionable error
+    if S3 credentials or the s3fs package aren't set up yet.
+    """
+    is_s3 = path.startswith("s3://")
+    try:
+        return pd.read_csv(path, **read_csv_kwargs)
+    except ImportError:
+        print(
+            "\nERROR: reading from S3 requires the 's3fs' package.\n"
+            "Install it with:\n    pip install -r scripts/requirements-profiling.txt\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except Exception as e:
+        if is_s3:
+            print(
+                f"\nERROR: could not read '{path}' from S3.\n"
+                f"Details: {e}\n\n"
+                "Check that:\n"
+                "  1. The bucket/key path is correct\n"
+                "  2. Your AWS credentials are configured (same ones your Airflow\n"
+                "     S3 operator uses — environment variables, ~/.aws/credentials,\n"
+                "     or an IAM role)\n"
+                "  3. Your IAM user/role has s3:GetObject permission on this bucket\n",
+                file=sys.stderr,
+            )
+        else:
+            print(f"\nERROR: could not read local file '{path}': {e}\n", file=sys.stderr)
+        sys.exit(1)
 
 
 def profile_dataframe(df: pd.DataFrame, name: str) -> list[str]:
@@ -97,18 +153,23 @@ def profile_dataframe(df: pd.DataFrame, name: str) -> list[str]:
 
 def main():
     parser = argparse.ArgumentParser(description="Profile raw Airbnb CSVs before schema design.")
-    parser.add_argument("--listings", required=True, help="Path to raw Listings.csv")
-    parser.add_argument("--reviews", required=True, help="Path to raw Reviews.csv")
-    parser.add_argument("--listings-encoding", default="latin-1", help="Encoding of the listings file")
+    parser.add_argument("--listings", required=True, help="Path to raw Listings.csv (local path or s3://bucket/key.csv)")
+    parser.add_argument("--reviews", required=True, help="Path to raw Reviews.csv (local path or s3://bucket/key.csv)")
+    parser.add_argument("--listings-encoding", default="utf-8",
+                         help="Encoding of the listings file. Default is utf-8, matching this "
+                              "project's Listings_utf8.csv. Pass --listings-encoding latin-1 "
+                              "only if profiling the original pre-conversion raw file.")
     parser.add_argument("--out", default="docs/data_profile_report.md", help="Output markdown report path")
     args = parser.parse_args()
 
     report = [f"# Data Profiling Report", f"Generated: {datetime.now().isoformat(timespec='seconds')}", ""]
 
-    listings = pd.read_csv(args.listings, encoding=args.listings_encoding, low_memory=False)
+    print(f"Loading listings from: {args.listings}")
+    listings = load_csv(args.listings, encoding=args.listings_encoding, low_memory=False)
     report += profile_dataframe(listings, "Listings.csv")
 
-    reviews = pd.read_csv(args.reviews, low_memory=False)
+    print(f"Loading reviews from: {args.reviews}")
+    reviews = load_csv(args.reviews, low_memory=False)
     report += profile_dataframe(reviews, "Reviews.csv")
 
     # Cross-check: does every categorical value that silver_listings.sql
