@@ -1,11 +1,14 @@
 """
 scripts/profile_data.py
 
-One-off data profiling step. Run this BEFORE designing the Snowflake
-bronze tables in dags/dbt/dbtproject/models/bronze/ — not as part of
-the Airflow DAG. It profiles the raw source CSVs and writes a markdown
-report so schema and null-handling decisions are based on what's
-actually in the data.
+Data profiling logic for the raw source CSVs, used two ways:
+
+1. STANDALONE CLI — run manually before designing/changing Snowflake
+   bronze tables. Writes a full markdown report.
+2. IMPORTED BY THE AIRFLOW DAG — dags/airbnb_pipeline_dag.py's
+   profile_source_data() task imports get_null_summary() and
+   check_currency_coverage() from this file directly, so the same
+   logic runs automatically on every pipeline run, before data loads.
 
 Accepts either a LOCAL path or an S3 URI for --listings / --reviews:
 
@@ -27,11 +30,12 @@ Accepts either a LOCAL path or an S3 URI for --listings / --reviews:
         --reviews  /path/to/Reviews.csv \
         --listings-encoding latin-1
 
-S3 access here uses your own local AWS credentials (configured via
-`aws configure`), separate from Snowflake's Storage Integration —
-this project's Airflow DAG never touches AWS credentials directly,
-since Snowflake handles S3 access internally through its own IAM
-role trust relationship.
+S3 access uses AWS credentials from the environment (AWS_ACCESS_KEY_ID /
+AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION) — set in .env when running via
+the Airflow DAG, or via `aws configure` when running this CLI manually on
+your own machine. This is separate from Snowflake's own Storage
+Integration, which Snowflake uses internally for its own S3 access and
+which this script/task does not use or depend on.
 """
 
 import sys
@@ -88,6 +92,29 @@ def load_csv(path: str, **read_csv_kwargs) -> pd.DataFrame:
         else:
             print(f"\nERROR: could not read local file '{path}': {e}\n", file=sys.stderr)
         sys.exit(1)
+
+
+def get_null_summary(df: pd.DataFrame, threshold_pct: float = 0.0) -> dict:
+    """Return {column: pct_null} for columns with a null rate above threshold_pct.
+
+    Used both by the CLI report and by the Airflow pre-flight task, so both
+    stay based on the exact same logic.
+    """
+    null_counts = df.isnull().sum()
+    total = len(df)
+    return {
+        col: round(cnt / total * 100, 2)
+        for col, cnt in null_counts.items()
+        if cnt > 0 and (cnt / total * 100) > threshold_pct
+    }
+
+
+def check_currency_coverage(listings_df: pd.DataFrame) -> set:
+    """Return any city present in the data but not covered by
+    silver_listings.sql's currency CASE statement. Empty set = fully covered.
+    """
+    actual_cities = set(listings_df["city"].dropna().unique())
+    return actual_cities - CURRENCY_HANDLED_CITIES
 
 
 def profile_dataframe(df: pd.DataFrame, name: str) -> list[str]:

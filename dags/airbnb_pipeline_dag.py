@@ -6,10 +6,14 @@ TOOL: Apache Airflow — runs on schedule daily
 """
 
 import logging
+import sys
 from datetime import datetime, timedelta
 from airflow.decorators import dag, task
 from airflow.operators.bash import BashOperator
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
+
+# scripts/ is mounted into the container at /opt/airflow/scripts (see docker-compose.yaml)
+sys.path.insert(0, "/opt/airflow/scripts")
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 SNOWFLAKE_CONN_ID  = "snowflake_conn"
@@ -19,6 +23,9 @@ SNOWFLAKE_WH       = "COMPUTE_WH"
 DBT_PROJECT_PATH   = "/opt/airflow/dags/dbt/dbtproject"
 DBT_PROFILES_PATH  = "/home/airflow/.dbt"
 DBT_EXECUTABLE     = "/home/airflow/.local/bin/dbt"
+S3_BUCKET          = "airbnb-pipeline-raw"
+S3_LISTINGS_KEY    = f"s3://{S3_BUCKET}/raw/Listings_utf8.csv"
+S3_REVIEWS_KEY     = f"s3://{S3_BUCKET}/raw/Reviews_utf8.csv"
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +97,40 @@ def airbnb_pipeline():
                 cursor.close()
         finally:
             conn.close()
+
+    # ── TASK 1.5: Profile source data before loading ─────────────────────────
+    @task()
+    def profile_source_data():
+        """
+        Reads the raw CSVs directly from S3 and runs the same checks as
+        scripts/profile_data.py: null-rate summary (logged, informational)
+        and currency-CASE coverage in silver_listings.sql (hard fail if any
+        city in the data isn't handled — this is a real schema-drift guard,
+        not just documentation).
+
+        Requires AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION
+        to be set in .env (separate from the Snowflake Storage Integration —
+        this task reads S3 directly via pandas/s3fs, not through Snowflake).
+        """
+        from profile_data import load_csv, get_null_summary, check_currency_coverage
+
+        listings = load_csv(S3_LISTINGS_KEY, encoding="utf-8", low_memory=False)
+
+        null_summary = get_null_summary(listings, threshold_pct=5.0)
+        if null_summary:
+            print("Null rates above 5%% (informational, not blocking):")
+            for col, pct in sorted(null_summary.items(), key=lambda x: -x[1]):
+                print(f"  {col}: {pct}%")
+
+        missing_cities = check_currency_coverage(listings)
+        if missing_cities:
+            raise ValueError(
+                f"Schema drift detected: {missing_cities} present in source data "
+                f"but not handled by silver_listings.sql's currency CASE statement. "
+                f"Update the model before this data can load correctly."
+            )
+
+        print("Profiling passed: all cities covered by currency logic.")
 
     # ── TASK 2: Load Listings from S3 → Bronze ───────────────────────────────
     @task()
@@ -286,12 +327,13 @@ def airbnb_pipeline():
     # (defined above), not @task functions — so they're referenced directly,
     # not called with (). Everything else is a TaskFlow task and gets called.
     s3_check      = check_s3_files()
+    profile_check = profile_source_data()
     load_listings = load_listings_to_bronze()
     load_reviews  = load_reviews_to_bronze()
     validate_b    = validate_bronze_load()
     gold_check    = validate_gold_layer()
 
-    s3_check >> [load_listings, load_reviews] >> validate_b \
+    s3_check >> profile_check >> [load_listings, load_reviews] >> validate_b \
         >> run_dbt_transformations >> run_dbt_tests >> gold_check
 
 
